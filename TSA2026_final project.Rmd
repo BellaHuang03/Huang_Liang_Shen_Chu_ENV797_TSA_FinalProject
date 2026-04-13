@@ -1,0 +1,151 @@
+---
+title: "TSA final project"
+output: html_document
+date: "2026-04-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(lubridate)
+library(ggplot2)
+library(forecast)  
+library(tseries)
+library(tidyverse)
+library(smooth)
+
+```
+
+# Import data
+```{r}
+#Importing time series data from text file#
+load_temp_data <- read.csv(
+  file="./caiso_load_temp_final.csv",
+  header=TRUE)
+
+head(load_temp_data)
+
+load_temp_data$date <- as.Date(load_temp_data$date)
+load_temp_data <- load_temp_data %>% arrange(date)
+```
+
+# Model 1 (Baseline): SARIMA
+```{r}
+# Split dataset
+train_data <- load_temp_data %>%
+  filter(date >= as.Date("2021-01-01") & date <= as.Date("2024-12-31"))
+
+valid_data <- load_temp_data %>%
+  filter(date >= as.Date("2025-01-01") & date <= as.Date("2025-12-31"))
+
+train_ts <- ts(train_data$daily_peak_load, frequency = 7)
+```
+
+```{r}
+baseline_sarima <- auto.arima(train_ts, seasonal = TRUE)
+summary(fit_sarima)
+
+# validatation 
+forecast_2025 <- forecast(fit_sarima, h = length(valid_ts))
+accuracy(forecast_2025, as.numeric(valid_data$daily_peak_load))
+
+autoplot(forecast_2025) +
+  autolayer(ts(valid_data$daily_peak_load,
+               start = end(train_ts) + c(0,1),
+               frequency = frequency(train_ts)),
+            series = "Actual",
+            color = "red") +
+  xlab("Date") +
+  ylab("Daily Peak Load") +
+  ggtitle("SARIMA (Baseline): Forecast vs Actual (2025)")
+```
+
+# Model 2: SARIMAX
+```{r}
+xreg_train <- as.matrix(train_data$tmax_mean)
+xreg_valid <- as.matrix(valid_data$tmax_mean)
+
+sum(is.na(xreg_train))
+sum(is.na(xreg_valid))
+
+# Fit model
+fit_sarimax <- auto.arima(train_ts,
+                          xreg = xreg_train,
+                          seasonal = TRUE)
+summary(fit_sarimax)
+
+forecast_sarimax_2025 <- forecast(fit_sarimax,
+                            xreg = xreg_valid,
+                            h = nrow(valid_data))
+accuracy(forecast_sarimax_2025, as.numeric(valid_data$daily_peak_load))
+
+autoplot(forecast_sarimax_2025) +
+  autolayer(ts(valid_data$daily_peak_load,
+               start = end(train_ts) + c(0,1),
+               frequency = frequency(train_ts)),
+            series = "Actual",
+            color = "red") +
+  xlab("Date") +
+  ylab("Daily Peak Load") +
+  ggtitle("SARIMAX: Forecast vs Actual (2025)")
+```
+
+# Model 3: Sarimax + Extreme heat dummy
+```{r}
+# Set the percentile of extreme heat
+heat_threshold <- quantile(load_temp_data$tmax_mean, 0.95, na.rm = TRUE)
+
+load_temp_data$extreme_heat <- ifelse(
+  load_temp_data$tmax_mean >= heat_threshold, 1, 0
+)
+
+table(load_temp_data$extreme_heat)
+heat_threshold
+
+train_data <- load_temp_data %>%
+  filter(date >= as.Date("2021-01-01") & date <= as.Date("2024-12-31"))
+
+valid_data <- load_temp_data %>%
+  filter(date >= as.Date("2025-01-01") & date <= as.Date("2025-12-31"))
+
+train_ts <- ts(train_data$daily_peak_load, frequency = 7)
+
+xreg_train_m3 <- cbind(
+  tmax = train_data$tmax_mean,
+  extreme = train_data$extreme_heat
+)
+
+xreg_valid_m3 <- cbind(
+  tmax = valid_data$tmax_mean,
+  extreme = valid_data$extreme_heat
+)
+
+fit_sarimax_m3 <- auto.arima(
+  train_ts,
+  xreg = xreg_train_m3,
+  seasonal = TRUE
+)
+
+summary(fit_sarimax_m3)
+
+forecast_sarimax_m3_2025 <- forecast(
+  fit_sarimax_m3,
+  xreg = xreg_valid_m3,
+  h = nrow(valid_data)
+)
+
+accuracy(forecast_sarimax_m3_2025, as.numeric(valid_data$daily_peak_load))
+
+autoplot(forecast_sarimax_m3_2025) +
+  autolayer(ts(valid_data$daily_peak_load,
+               start = end(train_ts) + c(0,1),
+               frequency = frequency(train_ts)),
+            series = "Actual",
+            color = "red") +
+  xlab("Date") +
+  ylab("Daily Peak Load") +
+  ggtitle("SARIMAX + extreme heat dummy: Forecast vs Actual (2025)")
+```
+
