@@ -4,6 +4,8 @@ output:
   pdf_document: default
   html_document: default
 date: "2026-04-12"
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
@@ -33,6 +35,8 @@ load_temp_data$date <- as.Date(load_temp_data$date)
 load_temp_data <- load_temp_data %>% arrange(date)
 ```
 
+
+
 # Model 1 (Baseline): SARIMA
 ```{r}
 # Split dataset
@@ -43,10 +47,17 @@ valid_data <- load_temp_data %>%
   filter(date >= as.Date("2025-01-01") & date <= as.Date("2025-12-31"))
 
 train_ts <- ts(train_data$daily_peak_load, frequency = 7)
+
+valid_ts <- ts(
+  valid_data$daily_peak_load,
+  start = end(train_ts) + c(0, 1),
+  frequency = frequency(train_ts)
+)
 ```
 
+
 ```{r}
-baseline_sarima <- auto.arima(train_ts, seasonal = TRUE)
+fit_sarima <- auto.arima(train_ts, seasonal = TRUE)
 summary(fit_sarima)
 
 # validation 
@@ -62,6 +73,26 @@ autoplot(forecast_2025) +
   xlab("Date") +
   ylab("Daily Peak Load") +
   ggtitle("SARIMA (Baseline): Forecast vs Actual (2025)")
+
+```
+
+
+```{r}
+plot_df_sarima <- valid_data %>%
+  mutate(forecast = as.numeric(forecast_sarima$mean))
+
+ggplot(plot_df_sarima, aes(x = date)) +
+  geom_line(aes(y = daily_peak_load, color = "Actual"), linewidth = 0.8) +
+  geom_line(aes(y = forecast, color = "Forecast"), linewidth = 0.8) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
+  labs(
+    title = "Baseline SARIMA: Forecast vs Actual (2025)",
+    x = "Date",
+    y = "Daily Peak Load",
+    color = NULL
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
 # Model 2: SARIMAX
@@ -92,6 +123,28 @@ autoplot(forecast_sarimax_2025) +
   xlab("Date") +
   ylab("Daily Peak Load") +
   ggtitle("SARIMAX: Forecast vs Actual (2025)")
+
+
+
+```
+
+
+```{r}
+plot_df_sarimax <- valid_data %>%
+  mutate(forecast = as.numeric(forecast_sarimax_2025$mean))
+
+ggplot(plot_df_sarimax, aes(x = date)) +
+  geom_line(aes(y = daily_peak_load, color = "Actual"), linewidth = 0.8) +
+  geom_line(aes(y = forecast, color = "Forecast"), linewidth = 0.8) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
+  labs(
+    title = "SARIMAX: Forecast vs Actual (2025)",
+    x = "Date",
+    y = "Daily Peak Load",
+    color = NULL
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
 # Model 3: Sarimax + Extreme heat dummy
@@ -149,5 +202,24 @@ autoplot(forecast_sarimax_m3_2025) +
   xlab("Date") +
   ylab("Daily Peak Load") +
   ggtitle("SARIMAX + extreme heat dummy: Forecast vs Actual (2025)")
+```
+
+
+```{r}
+plot_df_sarimax_dummy <- valid_data %>%
+  mutate(forecast = as.numeric(forecast_sarimax_m3_2025$mean))
+
+ggplot(plot_df_sarimax_dummy, aes(x = date)) +
+  geom_line(aes(y = daily_peak_load, color = "Actual"), linewidth = 0.8) +
+  geom_line(aes(y = forecast, color = "Forecast"), linewidth = 0.8) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
+  labs(
+    title = "SARIMAX + Extreme Heat Dummy: Forecast vs Actual (2025)",
+    x = "Date",
+    y = "Daily Peak Load",
+    color = NULL
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
