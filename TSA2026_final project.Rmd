@@ -79,7 +79,7 @@ autoplot(forecast_2025) +
 
 ```{r}
 plot_df_sarima <- valid_data %>%
-  mutate(forecast = as.numeric(forecast_sarima$mean))
+  mutate(forecast = as.numeric(forecast_2025$mean))
 
 ggplot(plot_df_sarima, aes(x = date)) +
   geom_line(aes(y = daily_peak_load, color = "Actual"), linewidth = 0.8) +
