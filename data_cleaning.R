@@ -5,6 +5,8 @@ library(dplyr)
 library(lubridate)
 library(purrr)
 library(cellranger)
+library(ggplot2)
+library(scales)
 
 ### Import & join
 ## CAISO Load
@@ -157,3 +159,57 @@ final_data <- load_daily %>%
   left_join(temp_daily, by = "date")
 
 write_csv(final_data, "caiso_load_temp_final.csv")
+
+# load time series
+ggplot(final_data, aes(x = date, y = daily_avg_load)) +
+  geom_line() +
+  scale_x_date(
+    date_breaks = "6 months", 
+    date_labels = "%Y/%m"
+  ) +
+  labs(title = "Daily Average CAISO Load", y = "MW", x = "Date")
+
+## check to only look at after 2024
+ggplot(final_data %>% filter(date >= "2024-01-01"),
+       aes(x = date, y = daily_avg_load)) +
+  geom_line() +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  labs(title = "Daily Load (2024)", y = "MW", x = "Month")
+
+# temp time series
+ggplot(final_data, aes(x = date, y = tavg_mean)) +
+  geom_line(color = "orange") +
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels = "%Y"
+  ) +
+  labs(
+    title = "Daily Average Temperature (California)",
+    y = "°F",
+    x = "Date"
+  ) +
+  theme_minimal()
+## check to only look at after 2024
+ggplot(final_data %>% filter(date >= "2024-01-01"),
+       aes(x = date, y = tavg_mean)) +
+  geom_line(color = "orange") +
+  scale_x_date(
+    date_breaks = "1 month",
+    date_labels = "%b"
+  ) +
+  labs(
+    title = "Daily Temperature (2024)",
+    y = "°F",
+    x = "Month"
+  ) +
+  theme_minimal()
+
+# scatter plot
+ggplot(final_data, aes(x = tavg_mean, y = daily_avg_load)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", color = "red") +
+  labs(
+    title = "Electricity Load vs Temperature",
+    x = "Temperature (°F)",
+    y = "Load (MW)"
+  )
