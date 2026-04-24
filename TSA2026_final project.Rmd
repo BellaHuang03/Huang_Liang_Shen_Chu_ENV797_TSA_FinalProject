@@ -19,10 +19,14 @@ library(forecast)
 library(tseries)
 library(tidyverse)
 library(smooth)
+library(dplyr)
 
 ```
 
-# Import data
+# Introduction, Motivation, Relevance, Objectives
+
+# Data Set Description
+
 ```{r}
 #Importing time series data from text file
 load_temp_data <- read.csv(
@@ -36,8 +40,12 @@ load_temp_data <- load_temp_data %>% arrange(date)
 ```
 
 
+# Methods
 
-# Model 1 (Baseline): SARIMA
+
+# Result
+## Model 1 (Baseline): SARIMA
+
 ```{r}
 # Split dataset
 train_data <- load_temp_data %>%
@@ -54,7 +62,6 @@ valid_ts <- ts(
   frequency = frequency(train_ts)
 )
 ```
-
 
 ```{r}
 fit_sarima <- auto.arima(train_ts, seasonal = TRUE)
@@ -76,7 +83,6 @@ autoplot(forecast_2025) +
 
 ```
 
-
 ```{r}
 plot_df_sarima <- valid_data %>%
   mutate(forecast = as.numeric(forecast_2025$mean))
@@ -95,7 +101,8 @@ ggplot(plot_df_sarima, aes(x = date)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
-# Model 2: SARIMAX
+## Model 2: SARIMAX
+
 ```{r}
 xreg_train <- as.matrix(train_data$tmax_mean)
 xreg_valid <- as.matrix(valid_data$tmax_mean)
@@ -128,7 +135,6 @@ autoplot(forecast_sarimax_2025) +
 
 ```
 
-
 ```{r}
 plot_df_sarimax <- valid_data %>%
   mutate(forecast = as.numeric(forecast_sarimax_2025$mean))
@@ -147,7 +153,8 @@ ggplot(plot_df_sarimax, aes(x = date)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
-# Model 3: Sarimax + Extreme heat dummy
+## Model 3: Sarimax + Extreme heat dummy
+
 ```{r}
 # Set the percentile of extreme heat
 heat_threshold <- quantile(load_temp_data$tmax_mean, 0.95, na.rm = TRUE)
@@ -204,7 +211,6 @@ autoplot(forecast_sarimax_m3_2025) +
   ggtitle("SARIMAX + extreme heat dummy: Forecast vs Actual (2025)")
 ```
 
-
 ```{r}
 plot_df_sarimax_dummy <- valid_data %>%
   mutate(forecast = as.numeric(forecast_sarimax_m3_2025$mean))
@@ -223,3 +229,188 @@ ggplot(plot_df_sarimax_dummy, aes(x = date)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
+## Model 4: TBATS
+
+```{r}
+# Create multi-seasonal ts with weekly + annual cycles
+train_msts <- msts(train_data$daily_peak_load,
+                   seasonal.periods = c(7, 365.25),
+                   start = decimal_date(as.Date("2021-01-01")))
+
+# Fit TBATS
+fit_tbats <- tbats(train_msts)
+summary(fit_tbats)
+
+# Forecast 2025
+forecast_tbats_2025 <- forecast(fit_tbats, h = nrow(valid_data))
+
+# Accuracy
+accuracy(forecast_tbats_2025, as.numeric(valid_data$daily_peak_load))
+
+# plot
+autoplot(forecast_tbats_2025) +
+  autolayer(ts(valid_data$daily_peak_load,
+               start = end(train_msts) + c(0, 1),
+               frequency = 7),
+            series = "Actual",
+            color = "red") +
+  xlab("Date") +
+  ylab("Daily Peak Load") +
+  ggtitle("TBATS (Multi-Seasonal): Forecast vs Actual (2025)")
+
+plot_df_tbats <- valid_data %>%
+  mutate(forecast = as.numeric(forecast_tbats_2025$mean))
+
+ggplot(plot_df_tbats, aes(x = date)) +
+  geom_line(aes(y = daily_peak_load, color = "Actual"), linewidth = 0.8) +
+  geom_line(aes(y = forecast, color = "Forecast"), linewidth = 0.8) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
+  labs(
+    title = "TBATS (Multi-Seasonal): Forecast vs Actual (2025)",
+    x = "Date",
+    y = "Daily Peak Load",
+    color = NULL
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+```
+
+## Model 5: Dynamic Harmonic Regression (ARIMA + Fourier Terms)
+
+```{r}
+# Step 1: Multi-seasonal ts
+train_msts <- msts(train_data$daily_peak_load,
+                   seasonal.periods = c(7, 365.25),
+                   start = decimal_date(as.Date("2021-01-01")))
+
+# Step 2: Find optimal K via AICc (weekly K1=1:3, annual K2=1:5)
+best_k    <- c(1, 1)
+best_aicc <- Inf
+
+for (k1 in 1:3) {
+  for (k2 in 1:5) {
+    xreg_k <- cbind(
+      fourier(train_msts, K = c(k1, k2)),
+      tmax = train_data$tmax_mean
+    )
+    fit_k <- auto.arima(train_msts,
+                        xreg      = xreg_k,
+                        seasonal  = FALSE,
+                        stepwise  = TRUE,
+                        approximation = TRUE)  # faster search
+    cat("K =", k1, k2, "| AICc =", fit_k$aicc, "\n")
+    if (fit_k$aicc < best_aicc) {
+      best_aicc <- fit_k$aicc
+      best_k    <- c(k1, k2)
+    }
+  }
+}
+
+cat("\nBest K:", best_k, "\n")
+
+# Step 3: Fit final model with best K + tmax
+fourier_train <- cbind(
+  fourier(train_msts, K = best_k),
+  tmax = train_data$tmax_mean
+)
+
+fourier_valid <- cbind(
+  fourier(train_msts, K = best_k, h = nrow(valid_data)),
+  tmax = valid_data$tmax_mean
+)
+
+fit_dhr <- auto.arima(train_msts,
+                      xreg      = fourier_train,
+                      seasonal  = FALSE,
+                      stepwise  = FALSE,
+                      approximation = FALSE)
+
+summary(fit_dhr)
+
+# Step 4: Forecast 2025
+forecast_dhr_2025 <- forecast(fit_dhr,
+                              xreg = fourier_valid,
+                              h    = nrow(valid_data))
+
+accuracy(forecast_dhr_2025, as.numeric(valid_data$daily_peak_load))
+
+# Step 5: Plot
+plot_df_dhr <- valid_data %>%
+  mutate(forecast = as.numeric(forecast_dhr_2025$mean))
+
+ggplot(plot_df_dhr, aes(x = date)) +
+  geom_line(aes(y = daily_peak_load, color = "Actual"), linewidth = 0.8) +
+  geom_line(aes(y = forecast, color = "Forecast"), linewidth = 0.8) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
+  labs(
+    title = paste0("DHR (K=", best_k[1], ",", best_k[2], ") + tmax: Forecast vs Actual (2025)"),
+    x = "Date",
+    y = "Daily Peak Load",
+    color = NULL
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Model comparison
+```{r}
+rmse_sarima    <- accuracy(forecast_2025,
+                           as.numeric(valid_data$daily_peak_load))[2, "RMSE"]
+
+rmse_sarimax   <- accuracy(forecast_sarimax_2025,
+                           as.numeric(valid_data$daily_peak_load))[2, "RMSE"]
+
+rmse_sarimax_d <- accuracy(forecast_sarimax_m3_2025,
+                           as.numeric(valid_data$daily_peak_load))[2, "RMSE"]
+
+rmse_tbats     <- accuracy(forecast_tbats_2025,
+                           as.numeric(valid_data$daily_peak_load))[2, "RMSE"]
+
+rmse_dhr       <- accuracy(forecast_dhr_2025,
+                           as.numeric(valid_data$daily_peak_load))[2, "RMSE"]
+
+# Build comparison dataframe
+comparison_df <- data.frame(
+  Model = c("SARIMA (Baseline)",
+            "SARIMAX",
+            "SARIMAX + Heat Dummy",
+            "TBATS",
+            "DHR + tmax"),
+  RMSE = round(c(rmse_sarima,
+                 rmse_sarimax,
+                 rmse_sarimax_d,
+                 rmse_tbats,
+                 rmse_dhr), 2)
+) %>%
+  arrange(RMSE) %>%
+  mutate(Rank = row_number())
+
+# Print table
+print(comparison_df)
+
+# Bar chart
+ggplot(comparison_df, aes(x = reorder(Model, RMSE), y = RMSE, fill = RMSE)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  geom_text(aes(label = format(round(RMSE, 1), big.mark = ",")),
+            hjust = -0.1, size = 3.8, fontface = "bold") +
+  coord_flip(clip = "off") +
+  scale_fill_gradient(low = "#2c7bb6", high = "#d7191c") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)),
+                     labels = scales::comma) +
+  labs(
+    title = "Model Comparison: RMSE on 2025 Validation Set",
+    subtitle = "Lower RMSE = better forecast accuracy",
+    x = NULL,
+    y = "RMSE"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(color = "grey50", size = 10),
+    axis.text.y   = element_text(size = 11),
+    panel.grid.major.y = element_blank()
+  )
+```
+
+# Summary and Conclusions
