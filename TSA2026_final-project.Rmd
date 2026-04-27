@@ -1,15 +1,26 @@
 ---
-title: "TSA final project"
+title: "Forecasting CAISO Electricity Demand: Incorporating Temperature in Time Series Models"
+author:
+  - "Bella Huang"
+  - "Cecilia Liang"
+  - "Jeffery Chu"
+  - "Shen Shen"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+subtitle: "TS Sp26"
 output:
-  pdf_document: default
-  html_document: default
-date: "2026-04-12"
-editor_options: 
-  chunk_output_type: console
+  pdf_document:
+    latex_engine: xelatex
+    keep_tex: true
+    toc: true
+    toc_depth: 2
+    number_sections: true
+header-includes:
+  - \usepackage{fontspec}
+  - \usepackage{xeCJK}
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 ```
 
 ```{r}
@@ -44,6 +55,27 @@ Lastly, on July 11, 2024, CAISO demand reached a peak of 43,969 MW, and the heat
 Together, these three events demonstrate the importance of accurate demand forecasting for supporting resource planning and operational decisions under extreme heat waves.
 
 # Data Set Description
+This study utilizes two primary data sources: electricity load data from the California Independent System Operator (CAISO) and temperature data from the National Oceanic and Atmospheric Administration (NOAA).
+
+The CAISO dataset provides hourly system-wide electricity demand for California, measured in megawatts (MW), covering the period from January 2021 to January 2026. This dataset reflects total electricity consumption across the CAISO grid and is widely used for energy market analysis and forecasting.
+
+Temperature data is obtained from the NOAA Global Historical Climatology Network Daily (GHCND) dataset. This dataset contains daily weather observations from multiple stations across California, including average temperature (TAVG), maximum temperature (TMAX), and minimum temperature (TMIN). These observations are used to capture weather conditions that influence electricity demand, particularly cooling-related consumption during high-temperature periods.
+
+## Dataset Processing
+Both datasets required preprocessing to ensure consistency and suitability for analysis.
+
+For the CAISO load data, multiple monthly Excel files were combined into a single dataset. During this process, inconsistencies in date formats—such as Excel serial dates and text-based dates—were standardized into a unified date format. Rows containing missing or invalid values were removed, and duplicate observations were filtered out. The hourly load data was then aggregated to the daily level, generating key variables including daily average load and daily peak load.
+
+For the temperature data, multiple CSV files containing station-level observations were merged. Dates were parsed and standardized, and missing values were handled appropriately. Since the load data represents system-wide demand, temperature observations from multiple stations were aggregated into a single statewide daily series by taking the average across stations. This approach provides a representative measure of overall temperature conditions in California.
+
+Finally, the cleaned load and temperature datasets were merged by date to form a unified dataset for analysis.
+
+## Key Characteristics
+The dataset exhibits strong seasonal patterns in both electricity demand and temperature. Electricity load tends to peak during summer months, driven by increased cooling demand, while lower demand is observed during milder seasons. Temperature follows a similar seasonal cycle, suggesting a close relationship between weather conditions and electricity consumption. A nonlinear relationship between temperature and electricity demand is also observed, with demand increasing significantly at higher temperatures. This characteristic motivates the inclusion of temperature as an exogenous variable in forecasting models, such as SARIMAX.
+
+To examine the temporal dependence structure of electricity demand, we analyze the autocorrelation function (ACF) and partial autocorrelation function (PACF) of the daily average load series.
+
+The ACF plot exhibits strong and persistent autocorrelation across a wide range of lags, with a slow decay pattern. This indicates that the load series is highly dependent on its past values and suggests the presence of non-stationarity and strong seasonal behavior. The PACF plot shows a dominant spike at lag 1, along with several smaller significant spikes at early lags, indicating that recent observations have a strong direct influence on current load values. Beyond the initial lags, the partial autocorrelations quickly diminish.
 
 ```{r}
 #Importing time series data from text file
@@ -57,6 +89,17 @@ load_temp_data$date <- as.Date(load_temp_data$date)
 load_temp_data <- load_temp_data %>% arrange(date)
 ```
 
+```{r}
+load_ts <- na.omit(load_temp_data$daily_avg_load)
+
+acf(load_ts,
+    lag.max = 60,
+    main = "ACF of Daily Average Load")
+
+pacf(load_ts,
+     lag.max = 60,
+     main = "PACF of Daily Average Load")
+```
 
 # Methods
 Dataset split: 
@@ -73,11 +116,16 @@ Model 1: SARIMA (Baseline Model)
 We utilized a SARIMA model as our baseline model, using only historic electricity demand data to identify autoregressive structure within the data and weekly seasonality, 
 
 Model 2: SARIMAX (with Temperature)
-
 Model 2 includes daily mean maximum temperature as an additional explanatory variable to the SARIMA model. The inclusion of temperature as a predictor (xreg) will enable us to model the continuously changing relationship between temperature and electric energy usage. 
 
 Model 3: SARIMAX (with Temperature & Extreme Heat)
 Both temperature and extreme heat indicator were included as predictors in model 3. This  allows us to assess both continuous changes in electric energy consumption resulting from temperature changes along with possible discrete increases in electric energy consumption resulting from extreme heat events.
+
+Model 4: TBATS 
+The SARIMA-based models are limited to capturing a single seasonal cycle. To address this, we applied TBATS, which is designed to handle multiple seasonal patterns simultaneously. We specified two seasonal periods — weekly (period = 7) and annual (period = 365.25) — to reflect both day-of-week variation and summer demand peaks. The model automatically selects its parameters, including Box-Cox transformation and ARMA orders, by minimizing AICc. Since TBATS does not support exogenous regressors, no temperature variable was included.
+
+Model 5: Dynamic Harmonic Regression (DHR) with Temperature
+Dynamic Harmonic Regression models seasonality using Fourier terms — pairs of sine and cosine waves — rather than seasonal differencing. This approach is more flexible and can capture both weekly (period = 7) and annual (period = 365.25) seasonal patterns simultaneously. The number of Fourier pairs (K) for each cycle was selected by minimizing AICc, searching K = 1–3 for the weekly cycle and K = 1–5 for the annual cycle. Daily mean maximum temperature (tmax_mean) was also included as an exogenous regressor, consistent with Models 2 and 3. The underlying ARIMA order was determined automatically using auto.arima() with seasonal = FALSE, since the Fourier terms fully handle the seasonal component.
 
 Model Assessment
 Each model's prediction accuracy was measured using RMSE, MAE, and MAPE. The use of these three measurements allowed us to compare both the absolute performance of each model as well as their relative performance.
@@ -325,6 +373,7 @@ train_msts <- msts(train_data$daily_peak_load,
                    start = decimal_date(as.Date("2021-01-01")))
 
 # Step 2: Find optimal K via AICc (weekly K1=1:3, annual K2=1:5)
+# Faster grid search
 best_k    <- c(1, 1)
 best_aicc <- Inf
 
@@ -335,11 +384,10 @@ for (k1 in 1:3) {
       tmax = train_data$tmax_mean
     )
     fit_k <- auto.arima(train_msts,
-                        xreg      = xreg_k,
-                        seasonal  = FALSE,
-                        stepwise  = TRUE,
-                        approximation = TRUE)  # faster search
-    cat("K =", k1, k2, "| AICc =", fit_k$aicc, "\n")
+                        xreg          = xreg_k,
+                        seasonal      = FALSE,
+                        stepwise      = TRUE,       # faster
+                        approximation = TRUE)       # faster
     if (fit_k$aicc < best_aicc) {
       best_aicc <- fit_k$aicc
       best_k    <- c(k1, k2)
@@ -347,28 +395,22 @@ for (k1 in 1:3) {
   }
 }
 
-cat("\nBest K:", best_k, "\n")
-
-# Step 3: Fit final model with best K + tmax
+# Then fit final model with full search only once
 fourier_train <- cbind(
   fourier(train_msts, K = best_k),
   tmax = train_data$tmax_mean
 )
-
 fourier_valid <- cbind(
   fourier(train_msts, K = best_k, h = nrow(valid_data)),
   tmax = valid_data$tmax_mean
 )
 
 fit_dhr <- auto.arima(train_msts,
-                      xreg      = fourier_train,
-                      seasonal  = FALSE,
-                      stepwise  = FALSE,
-                      approximation = FALSE)
+                      xreg          = fourier_train,
+                      seasonal      = FALSE,
+                      stepwise      = TRUE,         # changed
+                      approximation = TRUE)         # changed
 
-summary(fit_dhr)
-
-# Step 4: Forecast 2025
 forecast_dhr_2025 <- forecast(fit_dhr,
                               xreg = fourier_valid,
                               h    = nrow(valid_data))
@@ -452,6 +494,7 @@ ggplot(comparison_df, aes(x = reorder(Model, RMSE), y = RMSE, fill = RMSE)) +
     panel.grid.major.y = element_blank()
   )
 ```
+
 # Results
 The results for 2025 show that incorporating temperature significantly improves forecasting accuracy. The SARIMAX model reduces RMSE from 4245.6 to 3014.7 (approximately 29% improvement), with similar improvements in MAE and MAPE. This confirms that electricity demand in CAISO is strongly driven by temperature, as higher temperatures increase cooling demand and lead to higher electricity load.
 
@@ -462,7 +505,6 @@ When comparing all models, those that incorporate more flexible seasonal structu
 The best-performing model is the Dynamic Harmonic Regression (DHR) with temperature, achieving the lowest RMSE of 2100.5. This represents a significant improvement over all other models, including TBATS. The superior performance of the DHR model suggests that combining Fourier terms to model complex seasonal patterns with temperature as an exogenous variable provides the most accurate forecasts. In particular, the DHR model is able to flexibly capture both short-term (weekly) and long-term (annual) seasonality while also accounting for temperature-driven demand fluctuations.
 
 Overall, the results demonstrate a clear ranking of model performance, with DHR + temperature performing best, followed by TBATS, SARIMAX-based models, and finally the baseline SARIMA model. These findings emphasize that both exogenous variables (such as temperature) and advanced seasonal modeling techniques are essential for improving electricity demand forecasts.
-
 
 # Discussion
 The results of this study provide strong evidence that incorporating temperature as an exogenous variable significantly improves the accuracy of electricity demand forecasting models. 
@@ -491,8 +533,8 @@ In conclusion, this study demonstrates that temperature is a critical factor in 
 The superior performance of the DHR model suggests that combining flexible seasonal modeling with exogenous variables is the most effective approach for electricity demand forecasting. This has important implications for grid operators like CAISO, as more accurate forecasts can improve resource planning, reduce the risk of outages, and enhance system reliability during periods of high demand.
 
 Future research could extend this work by incorporating additional variables such as humidity, electricity prices, or renewable energy generation, as well as exploring machine learning approaches to capture nonlinear relationships more effectively.
-# Reference
 
+# Reference
 CAISO. (n.d.). How electricity flows | California ISO. Caiso.com. Retrieved April 24, 2026, from https://www.caiso.com/about/our-business/how-electricity-flows
 
 CAISO. (2025). 2025 Summer Loads and Resources Assessment. Caiso.com. https://www.caiso.com/content/summer-loads-resources-assessment/2025/index.html
